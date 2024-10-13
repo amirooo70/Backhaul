@@ -7,8 +7,9 @@ Welcome to the **`Backhaul`** project! This project provides a high-performance 
 ## Table of Contents
 
 1. [Introduction](#introduction)
-2. [Installation](#installation)
-3. [Usage](#usage)
+2. [Features](#features)
+3. [Installation](#installation)
+4. [Usage](#usage)
    - [Configuration Options](#configuration-options)
    - [Detailed Configuration](#detailed-configuration)
       - [TCP Configuration](#tcp-configuration)
@@ -17,18 +18,33 @@ Welcome to the **`Backhaul`** project! This project provides a high-performance 
       - [Secure WebSocket Configuration](#secure-websocket-configuration)
       - [WS Multiplexing Configuration](#ws-multiplexing-configuration)
       - [WSS Multiplexing Configuration](#wss-multiplexing-configuration)
-4. [Generating a Self-Signed TLS Certificate with OpenSSL](#generating-a-self-signed-tls-certificate-with-openssl)
-5. [Running backhaul as a service](#running-backhaul-as-a-service)
-6. [FAQ](#faq)
-7. [Benchmark](#benchmark)
-8. [License](#license)
-9. [Donation](#donation)
+5. [Generating a Self-Signed TLS Certificate with OpenSSL](#generating-a-self-signed-tls-certificate-with-openssl)
+6. [Running backhaul as a service](#running-backhaul-as-a-service)
+7. [FAQ](#faq)
+8. [Benchmark](#benchmark)
+9. [License](#license)
+10. [Donation](#donation)
 
 ---
 
 ## Introduction
 
 This project offers a robust reverse tunneling solution to overcome NAT and firewall restrictions, supporting various transport protocols. It’s engineered for high efficiency and concurrency.
+
+
+## Features
+
+* **High Performance**: Optimized for handling massive concurrent connections efficiently.
+* **Protocol Flexibility**: Supports TCP, WebSocket (WS), and Secure WebSocket (WSS) transports.
+* **UDP over TCP**: Implements UDP traffic encapsulation and forwarding over a TCP connection for reliable delivery with built-in congestion control.
+* **Multiplexing**: Enables multiple connections over a single transport with SMUX.
+* **NAT & Firewall Bypass**: Overcomes restrictions with reverse tunneling.
+* **Traffic Sniffing**: Optional network traffic monitoring with logging support.
+* **Configurable Keepalive**: Adjustable keep-alive and heartbeat intervals for stable connections.
+* **TLS Encryption**: Secure connections via WSS with support for custom TLS certificates.
+* **Web Interface**: Real-time monitoring through a lightweight web interface.
+* **Hot Reload Configuration**: Supports dynamic configuration reloading without server restarts.
+
 
 ## Installation
 
@@ -68,6 +84,7 @@ To start using the solution, you'll need to configure both server and client com
     [server]# Local, IRAN
     bind_addr = "0.0.0.0:3080"    # Address and port for the server to listen on (mandatory).
     transport = "tcp"             # Protocol to use ("tcp", "tcpmux", "ws", "wss", "wsmux", "wssmux". mandatory).
+    accept_udp = true             # Enable transferring UDP connections over TCP transport. (optional, default: false)
     token = "your_token"          # Authentication token for secure communication (optional).
     keepalive_period = 75         # Interval in seconds to send keep-alive packets.(optional, default: 75s)
     nodelay = false               # Enable TCP_NODELAY (optional, default: false).

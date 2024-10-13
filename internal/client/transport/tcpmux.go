@@ -133,7 +133,7 @@ func (c *TcpMuxTransport) channelDialer() {
 			}
 
 			// Sending security token
-			err = utils.SendBinaryString(tunnelConn, c.config.Token)
+			err = utils.SendBinaryTransportString(tunnelConn, c.config.Token, utils.SG_Chan)
 			if err != nil {
 				c.logger.Errorf("failed to send security token: %v", err)
 				tunnelConn.Close()
@@ -147,7 +147,7 @@ func (c *TcpMuxTransport) channelDialer() {
 				continue
 			}
 			// Receive response
-			message, err := utils.ReceiveBinaryString(tunnelConn)
+			message, _, err := utils.ReceiveBinaryTransportString(tunnelConn)
 			if err != nil {
 				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 					c.logger.Warn("timeout while waiting for control channel response")
