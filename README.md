@@ -14,6 +14,7 @@ Welcome to the **`Backhaul`** project! This project provides a high-performance 
    - [Detailed Configuration](#detailed-configuration)
       - [TCP Configuration](#tcp-configuration)
       - [TCP Multiplexing Configuration](#tcp-multiplexing-configuration)
+      - [UDP Configuration](#udp-configuration)
       - [WebSocket Configuration](#websocket-configuration)
       - [Secure WebSocket Configuration](#secure-websocket-configuration)
       - [WS Multiplexing Configuration](#ws-multiplexing-configuration)
@@ -84,7 +85,7 @@ To start using the solution, you'll need to configure both server and client com
     [server]# Local, IRAN
     bind_addr = "0.0.0.0:3080"    # Address and port for the server to listen on (mandatory).
     transport = "tcp"             # Protocol to use ("tcp", "tcpmux", "ws", "wss", "wsmux", "wssmux". mandatory).
-    accept_udp = true             # Enable transferring UDP connections over TCP transport. (optional, default: false)
+    accept_udp = false             # Enable transferring UDP connections over TCP transport. (optional, default: false)
     token = "your_token"          # Authentication token for secure communication (optional).
     keepalive_period = 75         # Interval in seconds to send keep-alive packets.(optional, default: 75s)
     nodelay = false               # Enable TCP_NODELAY (optional, default: false).
@@ -103,11 +104,14 @@ To start using the solution, you'll need to configure both server and client com
     log_level = "info"            # Log level ("panic", "fatal", "error", "warn", "info", "debug", "trace", optional, default: "info").
 
     ports = [
-    "443",  # Listen on local port 443 and forward to remote port 443 (default forwarding).
-    "4000=5000",  # Listen on local port 4000 (bind to all local IPs) and forward to remote port 5000.
-    "127.0.0.2:4001=5001",  # Bind to specific local IP (127.0.0.2), listen on port 4001, and forward to remote port 5001.
-    "4002=1.1.1.1:5002",  # Listen on local port 4002 and forward to a specific remote IP (1.1.1.1) on port 5002.
-    "127.0.0.2:4003=1.1.1.1:5003",  # Bind to specific local IP (127.0.0.2), listen on port 4003, and forward to remote IP (1.1.1.1) on port 5003.
+    "443-600",                  # Listen on all ports in the range 443 to 600
+    "443-600:5201",             # Listen on all ports in the range 443 to 600 and forward traffic to 5201
+    "443-600=1.1.1.1:5201",     # Listen on all ports in the range 443 to 600 and forward traffic to 1.1.1.1:5201
+    "443",                      # Listen on local port 443 and forward to remote port 443 (default forwarding).
+    "4000=5000",                # Listen on local port 4000 (bind to all local IPs) and forward to remote port 5000.
+    "127.0.0.2:443=5201",       # Bind to specific local IP (127.0.0.2), listen on port 443, and forward to remote port 5201.
+    "443=1.1.1.1:5201",         # Listen on local port 443 and forward to a specific remote IP (1.1.1.1) on port 5201.
+    "127.0.0.2:443=1.1.1.1:5201",  # Bind to specific local IP (127.0.0.2), listen on port 443, and forward to remote IP (1.1.1.1) on port 5201.
    ]
 
     ```
@@ -123,9 +127,11 @@ To start using the solution, you'll need to configure both server and client com
    ```toml
    [client]  # Behind NAT, firewall-blocked
    remote_addr = "0.0.0.0:3080"  # Server address and port (mandatory).
+   edge_ip = "188.114.96.0"      # Edge IP used for CDN connection, specifically for WebSocket-based transports.(Optional, default none)
    transport = "tcp"             # Protocol to use ("tcp", "tcpmux", "ws", "wss", "wsmux", "wssmux". mandatory).
    token = "your_token"          # Authentication token for secure communication (optional).
    connection_pool = 8           # Number of pre-established connections.(optional, default: 8).
+   aggressive_pool = false       # Enables aggressive connection pool management.(optional, default: false).
    keepalive_period = 75         # Interval in seconds to send keep-alive packets. (optional, default: 75s)
    nodelay = false               # Use TCP_NODELAY (optional, default: false).
    retry_interval = 3            # Retry interval in seconds (optional, default: 3s).
@@ -154,6 +160,7 @@ To start using the solution, you'll need to configure both server and client com
    [server]
    bind_addr = "0.0.0.0:3080"
    transport = "tcp"
+   accept_udp = false 
    token = "your_token"
    keepalive_period = 75  
    nodelay = true 
@@ -173,6 +180,7 @@ To start using the solution, you'll need to configure both server and client com
    transport = "tcp"
    token = "your_token" 
    connection_pool = 8
+   aggressive_pool = false
    keepalive_period = 75
    dial_timeout = 10
    nodelay = true 
@@ -194,6 +202,7 @@ To start using the solution, you'll need to configure both server and client com
    `connection_pool`: Set the number of pre-established connections for better latency.
    
    `nodelay`: Refers to a TCP socket option (TCP_NODELAY) that improve the latency but decrease the bandwidth
+
 
 #### TCP Multiplexing Configuration
 * **Server**:
@@ -226,6 +235,7 @@ To start using the solution, you'll need to configure both server and client com
    transport = "tcpmux"
    token = "your_token" 
    connection_pool = 8
+   aggressive_pool = false
    keepalive_period = 75
    dial_timeout = 10
    retry_interval = 3
@@ -246,6 +256,39 @@ To start using the solution, you'll need to configure both server and client com
    * Refer to TCP configuration for more information.
 
 
+#### UDP Configuration
+* **Server**:
+
+   ```toml
+   [server]
+   bind_addr = "0.0.0.0:3080"
+   transport = "udp"
+   token = "your_token"
+   heartbeat = 20 
+   channel_size = 2048
+   sniffer = false 
+   web_port = 2060
+   sniffer_log = "/root/backhaul.json"
+   log_level = "info"
+   ports = []
+   ```
+* **Client**:
+
+   ```toml
+   [client]
+   remote_addr = "0.0.0.0:3080"
+   transport = "udp"
+   token = "your_token" 
+   connection_pool = 8
+   aggressive_pool = false
+   retry_interval = 3
+   sniffer = false
+   web_port = 2060 
+   sniffer_log = "/root/backhaul.json"
+   log_level = "info"
+
+   ```
+   
 #### WebSocket Configuration
 * **Server**:
 
@@ -270,9 +313,11 @@ To start using the solution, you'll need to configure both server and client com
    ```toml
    [client]
    remote_addr = "0.0.0.0:8080"
+   edge_ip = "" 
    transport = "ws"
    token = "your_token" 
    connection_pool = 8
+   aggressive_pool = false
    keepalive_period = 75 
    dial_timeout = 10
    retry_interval = 3
@@ -312,9 +357,11 @@ To start using the solution, you'll need to configure both server and client com
    ```toml
    [client]
    remote_addr = "0.0.0.0:8443"
+   edge_ip = "" 
    transport = "wss"
    token = "your_token" 
    connection_pool = 8
+   aggressive_pool = false
    keepalive_period = 75
    dial_timeout = 10
    retry_interval = 3  
@@ -358,9 +405,11 @@ To start using the solution, you'll need to configure both server and client com
    ```toml
    [client]
    remote_addr = "0.0.0.0:3080"
+   edge_ip = "" 
    transport = "wsmux"
    token = "your_token" 
    connection_pool = 8
+   aggressive_pool = false
    keepalive_period = 75
    dial_timeout = 10
    nodelay = true
@@ -405,6 +454,7 @@ To start using the solution, you'll need to configure both server and client com
    ```toml
    [client]
    remote_addr = "0.0.0.0:443"
+   edge_ip = "" 
    transport = "wssmux"
    token = "your_token" 
    keepalive_period = 75
@@ -412,6 +462,7 @@ To start using the solution, you'll need to configure both server and client com
    nodelay = true
    retry_interval = 3
    connection_pool = 8
+   aggressive_pool = false
    mux_version = 1
    mux_framesize = 32768 
    mux_recievebuffer = 4194304
@@ -531,9 +582,12 @@ This project is licensed under the AGPL-3.0 license. See the LICENSE file for de
 
 ## Donation
 
-   <a href="https://nowpayments.io/donation?api_key=6Z16MRY-AF14Y8T-J24TXVS-00RDKK7&source=lk_donation&medium=referral" target="_blank">
-     <img src="https://nowpayments.io/images/embeds/donation-button-white.svg" alt="Crypto donation button by NOWPayments">
-    </a>
+Donate TRX (TRC-20) to support our project:
+``` wallet
+TMVBGzX4qpt12R1qWsJMpT1ttoKH1kus1H
+```
+Thanks for your support! 
 
 ## Stargazers over time
 [![Stargazers over time](https://starchart.cc/Musixal/Backhaul.svg?variant=light)](https://starchart.cc/Musixal/Backhaul)
+

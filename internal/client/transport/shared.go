@@ -42,16 +42,16 @@ func ResolveRemoteAddr(remoteAddr string) (int, string, error) {
 	return port, remoteAddr, nil
 }
 
-func TcpDialer(address string, timeout time.Duration, keepAlive time.Duration, nodelay bool) (*net.TCPConn, error) {
+func TcpDialer(ctx context.Context, address string, timeout time.Duration, keepAlive time.Duration, nodelay bool, retry int) (*net.TCPConn, error) {
 	var tcpConn *net.TCPConn
 	var err error
 
-	retries := 3               // Number of retries
+	retries := retry           // Number of retries
 	backoff := 1 * time.Second // Initial backoff duration
 
 	for i := 0; i < retries; i++ {
 		// Attempt to establish a TCP connection
-		tcpConn, err = attemptTcpDialer(address, timeout, keepAlive, nodelay)
+		tcpConn, err = attemptTcpDialer(ctx, address, timeout, keepAlive, nodelay)
 		if err == nil {
 			// Connection successful
 			return tcpConn, nil
@@ -67,17 +67,14 @@ func TcpDialer(address string, timeout time.Duration, keepAlive time.Duration, n
 		backoff *= 2 // Exponential backoff (double the wait time after each failure)
 	}
 
-	return nil, fmt.Errorf("failed to dial TCP address %s after %d retries: %v", address, retries, err)
+	return nil, err
 }
 
-func attemptTcpDialer(address string, timeout time.Duration, keepAlive time.Duration, nodelay bool) (*net.TCPConn, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	// Resolve the address to a TCP address
+func attemptTcpDialer(ctx context.Context, address string, timeout time.Duration, keepAlive time.Duration, nodelay bool) (*net.TCPConn, error) {
+	//Resolve the address to a TCP address
 	tcpAddr, err := net.ResolveTCPAddr("tcp", address)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("DNS resolution: %v", err)
 	}
 
 	// Options
@@ -104,7 +101,7 @@ func attemptTcpDialer(address string, timeout time.Duration, keepAlive time.Dura
 		err = tcpConn.SetNoDelay(false)
 		if err != nil {
 			tcpConn.Close()
-			return nil, err
+			return nil, fmt.Errorf("failed to set TCP_NODELAY")
 		}
 	}
 
@@ -138,16 +135,16 @@ func ReusePortControl(network, address string, s syscall.RawConn) error {
 	return controlErr
 }
 
-func WebSocketDialer(addr string, path string, timeout time.Duration, keepalive time.Duration, nodelay bool, token string, mode config.TransportType) (*websocket.Conn, error) {
+func WebSocketDialer(ctx context.Context, addr string, edgeIP string, path string, timeout time.Duration, keepalive time.Duration, nodelay bool, token string, mode config.TransportType, retry int) (*websocket.Conn, error) {
 	var tunnelWSConn *websocket.Conn
 	var err error
 
-	retries := 3               // Number of retries
+	retries := retry           // Number of retries
 	backoff := 1 * time.Second // Initial backoff duration
 
 	for i := 0; i < retries; i++ {
 		// Attempt to dial the WebSocket
-		tunnelWSConn, err = attemptDialWebSocket(addr, path, timeout, keepalive, nodelay, token, mode)
+		tunnelWSConn, err = attemptDialWebSocket(ctx, addr, edgeIP, path, timeout, keepalive, nodelay, token, mode)
 		if err == nil {
 			// If successful, return the connection
 			return tunnelWSConn, nil
@@ -163,27 +160,37 @@ func WebSocketDialer(addr string, path string, timeout time.Duration, keepalive 
 		backoff *= 2 // Exponential backoff (double the wait time after each failure)
 	}
 
-	return nil, fmt.Errorf("failed to dial WebSocket server after %d retries: %v", retries, err)
+	return nil, err
 }
 
-func attemptDialWebSocket(addr string, path string, timeout time.Duration, keepalive time.Duration, nodelay bool, token string, mode config.TransportType) (*websocket.Conn, error) {
-	// Create a TLS configuration that allows insecure connections
-	tlsConfig := &tls.Config{
-		InsecureSkipVerify: true, // Skip server certificate verification
-	}
-
+func attemptDialWebSocket(ctx context.Context, addr string, edgeIP string, path string, timeout time.Duration, keepalive time.Duration, nodelay bool, token string, mode config.TransportType) (*websocket.Conn, error) {
 	// Setup headers with authorization
 	headers := http.Header{}
 	headers.Add("Authorization", fmt.Sprintf("Bearer %v", token))
 
 	var wsURL string
 	dialer := websocket.Dialer{}
+
+	// Handle edgeIP assignment
+	if edgeIP != "" {
+		_, port, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid address format, failed to parse: %w", err)
+		}
+
+		edgeIP = fmt.Sprintf("%s:%s", edgeIP, port)
+	} else {
+		edgeIP = addr
+	}
+
 	if mode == config.WS || mode == config.WSMUX {
 		wsURL = fmt.Sprintf("ws://%s%s", addr, path)
+
 		dialer = websocket.Dialer{
-			HandshakeTimeout: timeout, // Set handshake timeout
+			EnableCompression: true,
+			HandshakeTimeout:  45 * time.Second, // default handshake timeout
 			NetDial: func(_, addr string) (net.Conn, error) {
-				conn, err := TcpDialer(addr, timeout, keepalive, nodelay)
+				conn, err := TcpDialer(ctx, edgeIP, timeout, keepalive, nodelay, 1)
 				if err != nil {
 					return nil, err
 				}
@@ -192,11 +199,18 @@ func attemptDialWebSocket(addr string, path string, timeout time.Duration, keepa
 		}
 	} else if mode == config.WSS || mode == config.WSSMUX {
 		wsURL = fmt.Sprintf("wss://%s%s", addr, path)
+
+		// Create a TLS configuration that allows insecure connections
+		tlsConfig := &tls.Config{
+			InsecureSkipVerify: true, // Skip server certificate verification
+		}
+
 		dialer = websocket.Dialer{
-			TLSClientConfig:  tlsConfig, // Pass the insecure TLS config here
-			HandshakeTimeout: timeout,   // Set handshake timeout
+			EnableCompression: true,
+			TLSClientConfig:   tlsConfig,        // Pass the insecure TLS config here
+			HandshakeTimeout:  45 * time.Second, // default handshake timeout
 			NetDial: func(_, addr string) (net.Conn, error) {
-				conn, err := TcpDialer(addr, timeout, keepalive, nodelay)
+				conn, err := TcpDialer(ctx, edgeIP, timeout, keepalive, nodelay, 1)
 				if err != nil {
 					return nil, err
 				}
@@ -210,6 +224,5 @@ func attemptDialWebSocket(addr string, path string, timeout time.Duration, keepa
 	if err != nil {
 		return nil, err
 	}
-
 	return tunnelWSConn, nil
 }

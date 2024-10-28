@@ -11,6 +11,7 @@ const (
 	WSMUX  TransportType = "wsmux"
 	WSSMUX TransportType = "wssmux"
 	QUIC   TransportType = "quic"
+	UDP    TransportType = "udp"
 )
 
 // ServerConfig represents the configuration for the server.
@@ -59,6 +60,8 @@ type ClientConfig struct {
 	WebPort          int           `toml:"web_port"`
 	SnifferLog       string        `toml:"sniffer_log"`
 	DialTimeout      int           `toml:"dial_timeout"`
+	AggressivePool   bool          `toml:"aggressive_pool"`
+	EdgeIP           string        `toml:"edge_ip"`
 }
 
 // Config represents the complete configuration, including both server and client settings.

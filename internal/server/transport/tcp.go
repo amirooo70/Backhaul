@@ -28,6 +28,7 @@ type TcpTransport struct {
 	controlChannel net.Conn
 	restartMutex   sync.Mutex
 	usageMonitor   *web.Usage
+	rtt            int64 // in ms, for UDP
 }
 
 type TcpConfig struct {
@@ -61,6 +62,7 @@ func NewTCPServer(parentCtx context.Context, config *TcpConfig, logger *logrus.L
 		reqNewConnChan: make(chan struct{}, config.ChannelSize),
 		controlChannel: nil, // will be set when a control connection is established
 		usageMonitor:   web.NewDataStore(fmt.Sprintf(":%v", config.WebPort), ctx, config.SnifferLog, config.Sniffer, &config.TunnelStatus, logger),
+		rtt:            0,
 	}
 
 	return server
@@ -103,6 +105,11 @@ func (s *TcpTransport) Restart() {
 	defer s.restartMutex.Unlock()
 
 	s.logger.Info("restarting server...")
+
+	// for removing timeout logs
+	level := s.logger.Level
+	s.logger.SetLevel(logrus.FatalLevel)
+
 	if s.cancel != nil {
 		s.cancel()
 	}
@@ -126,8 +133,10 @@ func (s *TcpTransport) Restart() {
 	s.config.TunnelStatus = ""
 	s.controlChannel = nil
 
-	go s.Start()
+	// set the log level again
+	s.logger.SetLevel(level)
 
+	go s.Start()
 }
 
 func (s *TcpTransport) channelHandshake() {
@@ -187,50 +196,74 @@ func (s *TcpTransport) channelHandler() {
 	defer ticker.Stop()
 
 	// Channel to receive the message or error
-	resultChan := make(chan struct {
-		message byte
-		err     error
-	})
+	messageChan := make(chan byte, 1)
 
 	go func() {
-		message, err := utils.ReceiveBinaryByte(s.controlChannel)
-		resultChan <- struct {
-			message byte
-			err     error
-		}{message, err}
+		for {
+			select {
+			case <-s.ctx.Done():
+				return
+			default:
+				message, err := utils.ReceiveBinaryByte(s.controlChannel)
+				if err != nil {
+					if s.cancel != nil {
+						s.logger.Error("failed to read from channel connection. ", err)
+						go s.Restart()
+					}
+					return
+				}
+				messageChan <- message
+			}
+		}
 	}()
+
+	// RTT measurment
+	rtt := time.Now()
+	err := utils.SendBinaryByte(s.controlChannel, utils.SG_RTT)
+	if err != nil {
+		s.logger.Error("failed to send RTT signal, attempting to restart server...")
+		go s.Restart()
+		return
+	}
 
 	for {
 		select {
 		case <-s.ctx.Done():
 			_ = utils.SendBinaryByte(s.controlChannel, utils.SG_Closed)
 			return
+
 		case <-s.reqNewConnChan:
 			err := utils.SendBinaryByte(s.controlChannel, utils.SG_Chan)
 			if err != nil {
-				s.logger.Error("error sending channel signal, attempting to restart server...")
+				s.logger.Error("failed to send request new connection signal. ", err)
 				go s.Restart()
 				return
 			}
+
 		case <-ticker.C:
 			err := utils.SendBinaryByte(s.controlChannel, utils.SG_HB)
 			if err != nil {
-				s.logger.Error("failed to send heartbeat signal, attempting to restart server...")
+				s.logger.Error("failed to send heartbeat signal")
 				go s.Restart()
 				return
 			}
 			s.logger.Trace("heartbeat signal sent successfully")
 
-		case result := <-resultChan:
-			if result.err != nil {
-				s.logger.Errorf("failed to receive message from channel connection: %v", result.err)
-				go s.Restart()
+		case message, ok := <-messageChan:
+			if !ok {
+				s.logger.Error("channel closed, likely due to an error in TCP read")
 				return
 			}
-			if result.message == utils.SG_Closed {
-				s.logger.Info("control channel has been closed by the client")
+
+			if message == utils.SG_Closed {
+				s.logger.Warn("control channel has been closed by the client")
 				go s.Restart()
 				return
+
+			} else if message == utils.SG_RTT {
+				measureRTT := time.Since(rtt)
+				s.rtt = measureRTT.Milliseconds()
+				s.logger.Infof("Round Trip Time (RTT): %d ms", s.rtt)
 			}
 		}
 	}
@@ -311,30 +344,105 @@ func (s *TcpTransport) acceptTunnelConn(listener net.Listener) {
 
 func (s *TcpTransport) parsePortMappings() {
 	for _, portMapping := range s.config.Ports {
-		var localAddr string
 		parts := strings.Split(portMapping, "=")
-		if len(parts) < 2 {
-			port, err := strconv.Atoi(parts[0])
-			if err != nil {
-				s.logger.Fatalf("invalid port mapping format: %s", portMapping)
+
+		var localAddr, remoteAddr string
+
+		// Check if only a single port or a port range is provided (no "=" present)
+		if len(parts) == 1 {
+			localPortOrRange := strings.TrimSpace(parts[0])
+			remoteAddr = localPortOrRange // If no remote addr is provided, use the local port as the remote port
+
+			// Check if it's a port range
+			if strings.Contains(localPortOrRange, "-") {
+				rangeParts := strings.Split(localPortOrRange, "-")
+				if len(rangeParts) != 2 {
+					s.logger.Fatalf("invalid port range format: %s", localPortOrRange)
+				}
+
+				// Parse and validate start and end ports
+				startPort, err := strconv.Atoi(strings.TrimSpace(rangeParts[0]))
+				if err != nil || startPort < 1 || startPort > 65535 {
+					s.logger.Fatalf("invalid start port in range: %s", rangeParts[0])
+				}
+
+				endPort, err := strconv.Atoi(strings.TrimSpace(rangeParts[1]))
+				if err != nil || endPort < 1 || endPort > 65535 || endPort < startPort {
+					s.logger.Fatalf("invalid end port in range: %s", rangeParts[1])
+				}
+
+				// Create listeners for all ports in the range
+				for port := startPort; port <= endPort; port++ {
+					localAddr = fmt.Sprintf(":%d", port)
+					go s.startListeners(localAddr, strconv.Itoa(port)) // Use port as the remoteAddr
+					time.Sleep(1 * time.Millisecond)                   // for wide port ranges
+				}
+				continue
+			} else {
+				// Handle single port case
+				port, err := strconv.Atoi(localPortOrRange)
+				if err != nil || port < 1 || port > 65535 {
+					s.logger.Fatalf("invalid port format: %s", localPortOrRange)
+				}
+				localAddr = fmt.Sprintf(":%d", port)
 			}
-			localAddr = fmt.Sprintf(":%d", port)
-			parts = append(parts, strconv.Itoa(port))
+		} else if len(parts) == 2 {
+			// Handle "local=remote" format
+			localPortOrRange := strings.TrimSpace(parts[0])
+			remoteAddr = strings.TrimSpace(parts[1])
+
+			// Check if local port is a range
+			if strings.Contains(localPortOrRange, "-") {
+				rangeParts := strings.Split(localPortOrRange, "-")
+				if len(rangeParts) != 2 {
+					s.logger.Fatalf("invalid port range format: %s", localPortOrRange)
+				}
+
+				// Parse and validate start and end ports
+				startPort, err := strconv.Atoi(strings.TrimSpace(rangeParts[0]))
+				if err != nil || startPort < 1 || startPort > 65535 {
+					s.logger.Fatalf("invalid start port in range: %s", rangeParts[0])
+				}
+
+				endPort, err := strconv.Atoi(strings.TrimSpace(rangeParts[1]))
+				if err != nil || endPort < 1 || endPort > 65535 || endPort < startPort {
+					s.logger.Fatalf("invalid end port in range: %s", rangeParts[1])
+				}
+
+				// Create listeners for all ports in the range
+				for port := startPort; port <= endPort; port++ {
+					localAddr = fmt.Sprintf(":%d", port)
+					go s.startListeners(localAddr, remoteAddr)
+					time.Sleep(1 * time.Millisecond) // for wide port ranges
+				}
+				continue
+			} else {
+				// Handle single local port case
+				port, err := strconv.Atoi(localPortOrRange)
+				if err == nil && port > 1 && port < 65535 { // format port=remoteAddress
+					localAddr = fmt.Sprintf(":%d", port)
+				} else {
+					localAddr = localPortOrRange // format ip:port=remoteAddress
+				}
+			}
 		} else {
-			localAddr = strings.TrimSpace(parts[0])
-			if _, err := strconv.Atoi(localAddr); err == nil {
-				localAddr = ":" + localAddr // :3080 format
-			}
+			s.logger.Fatalf("invalid port mapping format: %s", portMapping)
 		}
-
-		remoteAddr := strings.TrimSpace(parts[1])
-
-		go s.localListener(localAddr, remoteAddr)
-
-		if s.config.AcceptUDP {
-			go s.udpListener(localAddr, remoteAddr)
-		}
+		// Start listeners for single port
+		go s.startListeners(localAddr, remoteAddr)
 	}
+}
+
+func (s *TcpTransport) startListeners(localAddr, remoteAddr string) {
+	// Start TCP listener
+	go s.localListener(localAddr, remoteAddr)
+
+	// Start UDP listener if configured
+	if s.config.AcceptUDP {
+		go s.udpListener(localAddr, remoteAddr)
+	}
+
+	s.logger.Debugf("Started listening on %s, forwarding to %s", localAddr, remoteAddr)
 }
 
 func (s *TcpTransport) localListener(localAddr string, remoteAddr string) {
